@@ -1,0 +1,28 @@
+**HCS Monk Brewmaster Script v1.0.0**
+
+A complete Brewmaster tank rotation for Project Sylvanas with IZI SDK support.
+
+**Features:**
+✅ Shado-Pan & Master of Harmony builds
+✅ M+ S3 tank buster reactions
+✅ Self-healing (Expel Harm, potion, Fortifying, Celestial)
+✅ Interrupts/stuns with boss checks (no wasted GCDs)
+✅ Targeting modes: Manual / Casters first / Skull first
+✅ Tiger's Lust root dispel
+✅ Full cooldown management
+
+**Installation:**
+1. Extract the `HCS_Monk_Brew` folder to your `scripts/` directory
+2. Ensure you have the shared modules (mplus_s3_interrupt_stun_list, mplus_s3_tank_buster_list, hcs_target_priority, etc.)
+3. Reload scripts
+
+**Files included:**
+- `header.lua` - Plugin loader (class/spec validation)
+- `main.lua` - Full rotation logic
+- `README.md` - Detailed documentation
+
+**Note:** Stuns and pushback effects automatically skip bosses to avoid wasting GCDs. Self-healing works even with no target.
+
+---
+
+**Download:** [Attach the HCS_Monk_Brew folder as a zip file]

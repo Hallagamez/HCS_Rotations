@@ -1,0 +1,20 @@
+# Exclude API and core files (not part of HCS rotations)
+.api/
+.cursor/
+common/
+core_lua/
+core_universal_kicks/
+core_universal_utility/
+
+# Exclude zip files
+*.zip
+
+# Exclude shared files that aren't HCS-specific
+shared/battle_rez_helper.lua
+shared/rotation_settings_ui.lua
+
+# Keep only HCS-specific shared files:
+# shared/hcs_class_colors.lua
+# shared/hcs_target_priority.lua
+# shared/mplus_s3_interrupt_stun_list.lua
+# shared/mplus_s3_tank_buster_list.lua
