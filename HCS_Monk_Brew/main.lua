@@ -3,18 +3,29 @@
     Builds: Shado-Pan (default) | Master of Harmony (menu toggle)
     Shado-Pan: ToD → BoK → Niuzao → BoF → TP(combo) → KS → Chi Burst → RJW → EK → KS → RJW → SCK.
     Harmony:   ToD → BoK → Chi Burst → Celestial Brew (at 2 charges) → Niuzao → BoF → TP(combo) → KS → EK → KS → RJW → Tiger Palm.
+
+    Features:
+    - Dual Logic: High Key (Survival) vs Low Key (Max DPS) — toggle via Logic mode.
+    - Smart Stagger: Auto-Purify on heavy stagger; use Purifying Brew before capping charges.
+    - Auto Survival: Fortifying / Celestial / Dampen Harm on dynamic HP thresholds (Survival mode).
+    - Burst Sync: Stack Bonedust Brew → Weapons of Order → Niuzao when both WoO and Niuzao ready.
+    - Energy anti-cap: Expel Harm when energy above threshold to avoid wasting.
+    - Auto-Execute: Touch of Death priority on low-HP targets (Smart targeting).
+    - Smart AoE: SCK priority when 5+ enemies (swap rotation).
+    - Emergency Healing: Vivify + Expel Harm when below critical HP%.
 ]]
 
 local izi = require("common/izi_sdk")
+local enums = require("common/enums")
 local key_helper = require("common/utility/key_helper")
 local control_panel_helper = require("common/utility/control_panel_helper")
 
 local ok_ui, rotation_settings_ui = pcall(require, "shared/rotation_settings_ui")
-local ok_mplus, mplus_s3 = pcall(require, "shared/mplus_s3_interrupt_stun_list")
-local ok_cc, class_colors = pcall(require, "shared/hcs_class_colors")
+local ok_mplus, mplus_s3 = pcall(require, "libraries/mplus_s3_interrupt_stun_list")
+local ok_cc, class_colors = pcall(require, "libraries/hcs_class_colors")
 local function hcs_header(cls, title) return (ok_cc and class_colors and class_colors.hcs_header and class_colors.hcs_header(cls, title)) or title end
-local ok_tankbuster, tank_buster_list = pcall(require, "shared/mplus_s3_tank_buster_list")
-local ok_tp, hcs_target_priority = pcall(require, "shared/hcs_target_priority")
+local ok_tankbuster, tank_buster_list = pcall(require, "libraries/mplus_s3_tank_buster_list")
+local ok_tp, hcs_target_priority = pcall(require, "libraries/hcs_target_priority")
 
 -- Ranges and constants
 local MELEE_RANGE = 8
@@ -22,7 +33,13 @@ local KEG_SMASH_RANGE = 8
 local KICK_RANGE = 15
 local AOE_RADIUS = 8
 local AOE_MIN_TARGETS = 2
+local AOE_HIGH_TARGETS = 5   -- Smart AoE: prioritize SCK/RJW above this count
 local TOUCH_OF_DEATH_EXECUTE_PCT = 15   -- Improved ToD: use when target HP <= this
+local STAGGER_HEAVY_DEBUFF_ID = 124273 -- Heavy (red) stagger: auto-Purify
+local PURIFY_HEAVY_THROTTLE_SEC = 2.0  -- Min seconds between Purify when used for heavy stagger (avoid spam)
+local last_purify_heavy_time = 0
+local ENERGY_CAP = 100       -- Brewmaster base max energy
+local VIVIFY_CHI_COST = 2
 local BLACKOUT_COMBO_BUFF_ID = 228563   -- Buff from Blackout Kick (consume with Tiger Palm)
 local TRINKET_SLOT_1 = 13
 local TRINKET_SLOT_2 = 14
@@ -59,6 +76,8 @@ local SPELLS = {
     INVOKE_NIUZAO     = izi.spell(132578),  -- Celestial
     RUSHING_JADE_WIND = izi.spell(116847),  -- AoE talent; use before Exploding Keg when both ready
     TIGERS_LUST       = izi.spell(116841),  -- Speed burst on friendly (macro: cast on self)
+    BONEDUST_BREW     = izi.spell(325216),  -- Covenant/signature; burst sync with WoO + Niuzao (pruned in TWW, optional)
+    VIVIFY            = izi.spell(116670),  -- Emergency instant heal (costs Chi)
 }
 
 -- Menu
@@ -67,6 +86,7 @@ local menu = {
     enabled          = core.menu.checkbox(false, TAG .. "enabled"),
     toggle_key       = core.menu.keybind(999, false, TAG .. "toggle"),
     build_harmony    = core.menu.checkbox(false, TAG .. "build_harmony"),  -- Master of Harmony (else Shado-Pan)
+    logic_mode       = core.menu.combobox(1, TAG .. "logic_mode"),  -- 1=High Key (Survival), 2=Low Key (Max DPS)
     interrupt        = core.menu.checkbox(true, TAG .. "interrupt"),
     mplus_s3_list    = core.menu.checkbox(false, TAG .. "mplus_s3_list"), -- Only kick/stop casts in M+ S3 list (shared/mplus_s3_interrupt_stun_list)
     use_cooldowns    = core.menu.checkbox(true, TAG .. "use_cds"),
@@ -75,7 +95,13 @@ local menu = {
     targeting_mode   = core.menu.combobox(1, TAG .. "targeting_mode"),  -- 1=Manual, 2=Casters first, 3=Skull first, 4=Smart
     right_click_attack = core.menu.checkbox(false, TAG .. "right_click_attack"),  -- Right-click enemy to attack from range (optional)
     potion_hp        = core.menu.slider_int(0, 100, 35, TAG .. "potion_hp"),
-    expel_harm_hp    = core.menu.slider_int(0, 100, 70, TAG .. "expel_harm_hp"),   -- Expel Harm self-heal below this %
+    expel_harm_hp    = core.menu.slider_int(0, 100, 70, TAG .. "expel_harm_hp"),
+    critical_hp      = core.menu.slider_int(0, 100, 35, TAG .. "critical_hp"),    -- Emergency Vivify + Expel below this
+    vivify_hp        = core.menu.slider_int(0, 100, 40, TAG .. "vivify_hp"),       -- Vivify when below (if not critical)
+    fortifying_hp    = core.menu.slider_int(0, 100, 50, TAG .. "fortifying_hp"),
+    celestial_hp     = core.menu.slider_int(0, 100, 60, TAG .. "celestial_hp"),
+    dampen_hp        = core.menu.slider_int(0, 100, 55, TAG .. "dampen_hp"),       -- Dampen Harm when below (auto survival)
+    energy_anticap   = core.menu.slider_int(70, 100, 88, TAG .. "energy_anticap"), -- Use Expel Harm above this % energy to avoid cap
     cooldowns_node   = core.menu.tree_node(),
     trinket1_boss    = core.menu.checkbox(false, TAG .. "trinket1_boss"),
     trinket1_cd      = core.menu.checkbox(true, TAG .. "trinket1_cd"),
@@ -97,7 +123,7 @@ if ok_ui and rotation_settings_ui and type(rotation_settings_ui.new) == "functio
         default_y = 200,
         default_w = 520,
         default_h = 650,
-        theme = "neutral",
+        theme = "monk",
     })
 end
 if ui then
@@ -107,11 +133,17 @@ if ui then
         end
         if t.checkbox_grid then
             t:checkbox_grid({
-                label = "Build",
+                label = "Build & Logic",
                 columns = 1,
                 elements = {
                     { element = menu.build_harmony, label = "Master of Harmony (else Shado-Pan)" },
                 },
+            })
+        end
+        if menu.logic_mode and t.combobox_list then
+            t:combobox_list({
+                label = "Dual Logic",
+                elements = { { element = menu.logic_mode, label = "Mode", options = LOGIC_OPTIONS } },
             })
         end
     end)
@@ -149,7 +181,13 @@ if ui then
                 label = "Thresholds",
                 elements = {
                     { element = menu.potion_hp, label = "Potion HP%", suffix = "%", visible_when = defensives_enabled },
-                    { element = menu.expel_harm_hp, label = "Expel Harm (self-heal) HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.expel_harm_hp, label = "Expel Harm HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.critical_hp, label = "Emergency (Vivify + Expel) HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.vivify_hp, label = "Vivify HP% (non-critical)", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.fortifying_hp, label = "Fortifying Brew HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.celestial_hp, label = "Celestial Brew HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.dampen_hp, label = "Dampen Harm HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.energy_anticap, label = "Energy anti-cap %", suffix = "%", visible_when = defensives_enabled },
                 },
             })
         end
@@ -201,17 +239,81 @@ local function get_trinket_item(me, slot)
     return izi.item(id)
 end
 
+local LOGIC_OPTIONS = { "High Key (Survival)", "Low Key (Max DPS)" }
+
+local function get_energy(me)
+    if not me or not enums or not enums.power_type then return 0 end
+    local pt = enums.power_type.ENERGY
+    if me.get_power and type(me.get_power) == "function" then
+        local v = me:get_power(pt)
+        return (type(v) == "number" and v) or 0
+    end
+    if me.power_current and type(me.power_current) == "function" then
+        local v = me:power_current(pt)
+        return (type(v) == "number" and v) or 0
+    end
+    return 0
+end
+
+local function get_chi(me)
+    if not me or not enums or not enums.power_type then return 0 end
+    local pt = enums.power_type.CHI
+    if me.get_power and type(me.get_power) == "function" then
+        local v = me:get_power(pt)
+        return (type(v) == "number" and v) or 0
+    end
+    if me.power_current and type(me.power_current) == "function" then
+        local v = me:power_current(pt)
+        return (type(v) == "number" and v) or 0
+    end
+    return 0
+end
+
+local function get_max_energy(me)
+    if not me or not enums or not enums.power_type then return ENERGY_CAP end
+    local pt = enums.power_type.ENERGY
+    if me.get_max_power and type(me.get_max_power) == "function" then
+        local v = me:get_max_power(pt)
+        return (type(v) == "number" and v >= 1) and v or ENERGY_CAP
+    end
+    return ENERGY_CAP
+end
+
+local function purifying_charges()
+    if not SPELLS.PURIFYING_BREW or not SPELLS.PURIFYING_BREW.charges then return 0 end
+    local c = SPELLS.PURIFYING_BREW:charges()
+    return (type(c) == "number" and c) or 0
+end
+
+local function purifying_max_charges()
+    if not SPELLS.PURIFYING_BREW or not SPELLS.PURIFYING_BREW.max_charges then return 1 end
+    local c = SPELLS.PURIFYING_BREW:max_charges()
+    return (type(c) == "number" and c >= 1) and c or 1
+end
+
+local function is_heavy_stagger(me)
+    if not me or not me.debuff_up then return false end
+    local v = me:debuff_up(STAGGER_HEAVY_DEBUFF_ID)
+    return v == true or (type(v) == "number" and v > 0)
+end
+
+local function is_survival_mode()
+    local v = (menu.logic_mode and menu.logic_mode.get) and menu.logic_mode:get() or 1
+    return v == 1
+end
+
 -- Render Menu
 core.register_on_render_menu_callback(function()
     if ui then ui:on_menu_render() end
     menu.root:render(hcs_header("MONK", "HCS Monk Brewmaster (Shado-Pan)"), function()
         menu.enabled:render("Enable Plugin")
         if not menu.enabled:get_state() then return end
-        if ui and ui.menu and ui.menu.enable then
+        if ui and ui.menu and ui.menu.enable and (not rotation_settings_ui or not rotation_settings_ui.is_stub) then
             ui.menu.enable:render("Show Custom UI Window")
         end
         menu.toggle_key:render("Toggle Rotation")
         menu.build_harmony:render("Master of Harmony build (else Shado-Pan)")
+        if menu.logic_mode then menu.logic_mode:render("Logic mode", LOGIC_OPTIONS, "High Key = Survival priority. Low Key = Max DPS.") end
         menu.interrupt:render("Interrupt (Spear Hand / Leg Sweep)")
         menu.mplus_s3_list:render("M+ S3 list only (kick/stop listed casts)")
         menu.cooldowns_node:render("Cooldowns", function()
@@ -226,6 +328,12 @@ core.register_on_render_menu_callback(function()
         menu.right_click_attack:render("Right-click attack (Chi Burst)")
         if menu.potion_hp then menu.potion_hp:render("Potion HP%") end
         if menu.expel_harm_hp then menu.expel_harm_hp:render("Expel Harm (self-heal) HP%") end
+        if menu.critical_hp then menu.critical_hp:render("Emergency heal HP% (Vivify + Expel)") end
+        if menu.vivify_hp then menu.vivify_hp:render("Vivify HP% (non-critical)") end
+        if menu.fortifying_hp then menu.fortifying_hp:render("Fortifying Brew HP%") end
+        if menu.celestial_hp then menu.celestial_hp:render("Celestial Brew HP%") end
+        if menu.dampen_hp then menu.dampen_hp:render("Dampen Harm HP%") end
+        if menu.energy_anticap then menu.energy_anticap:render("Energy anti-cap % (Expel above)") end
         if menu.targeting_mode and (ok_tp and hcs_target_priority and hcs_target_priority.TARGETING_OPTIONS) then
             menu.targeting_mode:render("Targeting mode", hcs_target_priority.TARGETING_OPTIONS, "Manual = current target only. Auto modes: Casters/Skull = simple priority. Smart = threat (tanking) > low HP (execute) > casters > Skull.")
         end
@@ -300,22 +408,99 @@ core.register_on_update_callback(function()
 
     if not rotation_enabled() then return end
 
-    -- Self-heal / low-HP defensives (no target required; like Paladin Lay on Hands)
+    -- Emergency Healing: Vivify + Expel when critical (no target required)
     if menu.use_defensives:get_state() then
         local my_hp = me:get_health_percentage()
+        local crit_pct = (menu.critical_hp and menu.critical_hp.get and menu.critical_hp:get()) or 35
+        if my_hp < crit_pct then
+            local chi = get_chi(me)
+            if chi >= VIVIFY_CHI_COST and SPELLS.VIVIFY:is_learned() and SPELLS.VIVIFY:cooldown_up() then
+                if SPELLS.VIVIFY:cast_safe(me, "Emergency: Vivify") then return end
+            end
+            if SPELLS.EXPEL_HARM:is_learned() and SPELLS.EXPEL_HARM:cooldown_up() then
+                if SPELLS.EXPEL_HARM:cast_safe(me, "Emergency: Expel Harm") then return end
+            end
+        end
+    end
+
+    -- Auto Survival: Fortifying / Celestial / Dampen by dynamic HP (Survival mode only)
+    if menu.use_defensives:get_state() and is_survival_mode() then
+        local my_hp = me:get_health_percentage()
+        local fh = (menu.fortifying_hp and menu.fortifying_hp.get and menu.fortifying_hp:get()) or 50
+        local ch = (menu.celestial_hp and menu.celestial_hp.get and menu.celestial_hp:get()) or 60
+        local dh = (menu.dampen_hp and menu.dampen_hp.get and menu.dampen_hp:get()) or 55
+        if my_hp < fh and SPELLS.FORTIFYING_BREW:is_learned() and SPELLS.FORTIFYING_BREW:cooldown_up() then
+            if SPELLS.FORTIFYING_BREW:cast_safe(me, "Auto Survival: Fortifying Brew") then return end
+        end
+        if my_hp < ch and SPELLS.CELESTIAL_BREW:is_learned() and SPELLS.CELESTIAL_BREW:cooldown_up() then
+            if SPELLS.CELESTIAL_BREW:cast_safe(me, "Auto Survival: Celestial Brew") then return end
+        end
+        if my_hp < dh and SPELLS.DAMPEN_HARM:is_learned() and SPELLS.DAMPEN_HARM:cooldown_up() then
+            if SPELLS.DAMPEN_HARM:cast_safe(me, "Auto Survival: Dampen Harm") then return end
+        end
+    end
+
+    -- Self-heal / potion / Expel (non-critical): Expel at expel_harm_hp; potion at potion_hp
+    if menu.use_defensives:get_state() then
+        local my_hp = me:get_health_percentage()
+        local crit_pct = (menu.critical_hp and menu.critical_hp.get and menu.critical_hp:get()) or 35
         local eh_pct = (menu.expel_harm_hp and menu.expel_harm_hp.get and menu.expel_harm_hp:get()) or 70
-        if my_hp < eh_pct and SPELLS.EXPEL_HARM:is_learned() and SPELLS.EXPEL_HARM:cooldown_up() then
+        if my_hp < eh_pct and my_hp >= crit_pct and SPELLS.EXPEL_HARM:is_learned() and SPELLS.EXPEL_HARM:cooldown_up() then
             if SPELLS.EXPEL_HARM:cast_safe(me, "Defensive: Expel Harm (self-heal)") then return end
         end
         local potion_pct = (menu.potion_hp and menu.potion_hp.get and menu.potion_hp:get()) or 35
         if my_hp < potion_pct and izi.use_best_health_potion_safe and izi.use_best_health_potion_safe() then
             return
         end
-        if my_hp < 50 and SPELLS.FORTIFYING_BREW:is_learned() and SPELLS.FORTIFYING_BREW:cooldown_up() then
-            if SPELLS.FORTIFYING_BREW:cast_safe(me, "Defensive: Fortifying Brew") then return end
+    end
+
+    -- Energy anti-cap: Expel Harm when near cap (avoid wasting energy) — skip if critical
+    if menu.use_defensives:get_state() then
+        local my_hp = me:get_health_percentage()
+        local crit_pct = (menu.critical_hp and menu.critical_hp.get and menu.critical_hp:get()) or 35
+        if my_hp >= crit_pct and SPELLS.EXPEL_HARM:is_learned() and SPELLS.EXPEL_HARM:cooldown_up() then
+            local e = get_energy(me)
+            local emax = get_max_energy(me)
+            local thresh = (menu.energy_anticap and menu.energy_anticap.get and menu.energy_anticap:get()) or 88
+            if emax > 0 and (e / emax) * 100 >= thresh then
+                if SPELLS.EXPEL_HARM:cast_safe(me, "Energy anti-cap: Expel Harm") then return end
+            end
         end
-        if my_hp < 60 and SPELLS.CELESTIAL_BREW:is_learned() and SPELLS.CELESTIAL_BREW:cooldown_up() then
-            if SPELLS.CELESTIAL_BREW:cast_safe(me, "Defensive: Celestial Brew") then return end
+    end
+
+    -- Vivify (non-critical): when below vivify_hp, if we have chi and not critical
+    if menu.use_defensives:get_state() then
+        local my_hp = me:get_health_percentage()
+        local crit_pct = (menu.critical_hp and menu.critical_hp.get and menu.critical_hp:get()) or 35
+        local vh = (menu.vivify_hp and menu.vivify_hp.get and menu.vivify_hp:get()) or 40
+        if my_hp < vh and my_hp >= crit_pct then
+            local chi = get_chi(me)
+            if chi >= VIVIFY_CHI_COST and SPELLS.VIVIFY:is_learned() and SPELLS.VIVIFY:cooldown_up() then
+                if SPELLS.VIVIFY:cast_safe(me, "Vivify (non-critical)") then return end
+            end
+        end
+    end
+
+    -- Smart Stagger: Purify on heavy stagger or when charges would cap (throttle all Purify to once per 2s)
+    if menu.use_defensives:get_state() and SPELLS.PURIFYING_BREW:is_learned() and SPELLS.PURIFYING_BREW:cooldown_up() then
+        local pc = purifying_charges()
+        local pmax = purifying_max_charges()
+        local at_cap = pmax >= 1 and pc >= pmax
+        local heavy = is_heavy_stagger(me)
+        local now = (core and core.time and core.time()) or 0
+        local throttle_ok = (now - last_purify_heavy_time) >= PURIFY_HEAVY_THROTTLE_SEC
+        if not throttle_ok then
+            -- skip: already Purified recently
+        elseif at_cap then
+            if SPELLS.PURIFYING_BREW:cast_safe(me, "Smart Stagger: Purifying Brew") then
+                last_purify_heavy_time = now
+                return
+            end
+        elseif heavy and pc >= pmax then
+            if SPELLS.PURIFYING_BREW:cast_safe(me, "Smart Stagger: Purifying Brew") then
+                last_purify_heavy_time = now
+                return
+            end
         end
     end
 
@@ -371,17 +556,24 @@ core.register_on_update_callback(function()
 
     if not me:affecting_combat() then return end
 
-    -- Cooldowns (from Wowhead Shado-Pan build): Weapons of Order, Explosive Brew, Invoke Niuzao
-    if menu.use_cooldowns:get_state() and in_melee then
-        if SPELLS.WEAPONS_OF_ORDER and SPELLS.WEAPONS_OF_ORDER:is_learned() and SPELLS.WEAPONS_OF_ORDER:cooldown_up() then
-            if SPELLS.WEAPONS_OF_ORDER:cast_safe(me, "CD: Weapons of Order") then return end
+    -- Burst Sync: Bonedust → WoO → Niuzao when both WoO and Niuzao ready
+    local woo_ready = SPELLS.WEAPONS_OF_ORDER and SPELLS.WEAPONS_OF_ORDER:is_learned() and SPELLS.WEAPONS_OF_ORDER:cooldown_up()
+    local niuzao_ready = SPELLS.INVOKE_NIUZAO and SPELLS.INVOKE_NIUZAO:is_learned() and SPELLS.INVOKE_NIUZAO:cooldown_up()
+    if menu.use_cooldowns:get_state() and in_melee and woo_ready and niuzao_ready then
+        if SPELLS.BONEDUST_BREW and SPELLS.BONEDUST_BREW:is_learned() and SPELLS.BONEDUST_BREW:cooldown_up() then
+            if SPELLS.BONEDUST_BREW:cast_safe(target, "Burst Sync: Bonedust Brew") then return end
         end
+        if SPELLS.WEAPONS_OF_ORDER:cast_safe(me, "Burst Sync: Weapons of Order") then return end
+        if SPELLS.INVOKE_NIUZAO:cast_safe(me, "Burst Sync: Invoke Niuzao") then return end
+    end
+
+    -- Cooldowns: Weapons of Order, Explosive Brew, Invoke Niuzao (when not stacking)
+    if menu.use_cooldowns:get_state() and in_melee then
+        if woo_ready and SPELLS.WEAPONS_OF_ORDER:cast_safe(me, "CD: Weapons of Order") then return end
         if SPELLS.EXPLOSIVE_BREW and SPELLS.EXPLOSIVE_BREW:is_learned() and SPELLS.EXPLOSIVE_BREW:cooldown_up() then
             if SPELLS.EXPLOSIVE_BREW:cast_safe(target, "CD: Explosive Brew") then return end
         end
-        if SPELLS.INVOKE_NIUZAO and SPELLS.INVOKE_NIUZAO:is_learned() and SPELLS.INVOKE_NIUZAO:cooldown_up() then
-            if SPELLS.INVOKE_NIUZAO:cast_safe(me, "CD: Invoke Niuzao") then return end
-        end
+        if niuzao_ready and SPELLS.INVOKE_NIUZAO:cast_safe(me, "CD: Invoke Niuzao") then return end
         if SPELLS.CELESTIAL_BREW:is_learned() and SPELLS.CELESTIAL_BREW:cooldown_up() then
             if SPELLS.CELESTIAL_BREW:cast_safe(me, "CD: Celestial Brew") then return end
         end
@@ -510,7 +702,11 @@ core.register_on_update_callback(function()
         if SPELLS.RUSHING_JADE_WIND:is_learned() and SPELLS.RUSHING_JADE_WIND:cooldown_up() then
             if SPELLS.RUSHING_JADE_WIND:cast_safe(me, "Rushing Jade Wind") then return end
         end
-        -- 13. Tiger Palm filler (Harmony: rarely/never SCK, use Tiger Palm for Harmonic Surge)
+        -- 13. Smart AoE: SCK when 5+ (Harmony usually TP filler)
+        if enemies_near >= AOE_HIGH_TARGETS and in_melee and SPELLS.SPINNING_CRANE:is_learned() then
+            if SPELLS.SPINNING_CRANE:cast_safe(target, "Smart AoE: Spinning Crane Kick") then return end
+        end
+        -- 14. Tiger Palm filler (Harmony: rarely/never SCK, use Tiger Palm for Harmonic Surge)
         if in_melee and SPELLS.TIGER_PALM:is_learned() then
             if SPELLS.TIGER_PALM:cast_safe(target, "Tiger Palm") then return end
         end
@@ -531,6 +727,10 @@ core.register_on_update_callback(function()
         -- 6. Keg Smash (one charge)
         if in_melee and SPELLS.KEG_SMASH:is_learned() and keg_charges >= 1 then
             if SPELLS.KEG_SMASH:cast_safe(target, "Keg Smash") then return end
+        end
+        -- 6b. Smart AoE: SCK when 5+ enemies (swap priority)
+        if enemies_near >= AOE_HIGH_TARGETS and in_melee and SPELLS.SPINNING_CRANE:is_learned() then
+            if SPELLS.SPINNING_CRANE:cast_safe(target, "Smart AoE: Spinning Crane Kick") then return end
         end
         -- 7. Chi Burst
         if SPELLS.CHI_BURST:is_learned() and SPELLS.CHI_BURST:cooldown_up() then

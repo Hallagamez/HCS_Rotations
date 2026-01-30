@@ -102,7 +102,7 @@ if ok_ui and rotation_settings_ui and type(rotation_settings_ui.new) == "functio
         default_y = 200,
         default_w = 520,
         default_h = 650,
-        theme = "neutral",
+        theme = "demonhunter",
     })
 end
 if ui then
@@ -245,7 +245,7 @@ core.register_on_render_menu_callback(function()
     menu.root:render(hcs_header("DEMON_HUNTER", "HCS Vengeance Demon Hunter"), function()
         menu.enabled:render("Enable Plugin")
         if not menu.enabled:get_state() then return end
-        if ui and ui.menu and ui.menu.enable then
+        if ui and ui.menu and ui.menu.enable and (not rotation_settings_ui or not rotation_settings_ui.is_stub) then
             ui.menu.enable:render("Show Custom UI Window")
         end
         menu.toggle_key:render("Toggle Rotation")

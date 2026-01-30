@@ -6,6 +6,12 @@
     doesn't hang when HoL procs from Divine Toll.
     Builds (Wowhead / Midnight Pre-Patch): Templar (Hammer of Light, Divine Toll) and
     Lightsmith (Holy Armaments instead of Divine Toll; no Hammer of Light).
+
+    Features:
+    - Dual Logic: High Key (Survival) vs Low Key (Max DPS); HP-based defensives (AD/DP) only in Survival.
+    - Dynamic defensives: Ardent Defender HP%, Divine Protection HP% sliders (Survival mode).
+    - Emergency critical HP: LoH/WoG/potion/AD/DP when below critical HP% (pre-target + with-target).
+    - Throttle: Hammer of Light suppressed 2s after Divine Toll (avoids proc spam).
 ]]
 
 local izi = require("common/izi_sdk")
@@ -76,10 +82,14 @@ local menu = {
     use_defensives   = core.menu.checkbox(true, TAG .. "use_def"),
     mplus_s3_tank_buster = core.menu.checkbox(true, TAG .. "mplus_s3_tank_buster"),
     targeting_mode   = core.menu.combobox(1, TAG .. "targeting_mode"),  -- 1=Manual, 2=Casters first, 3=Skull first, 4=Smart
+    logic_mode       = core.menu.combobox(1, TAG .. "logic_mode"),  -- 1=High Key (Survival), 2=Low Key (Max DPS)
     right_click_attack = core.menu.checkbox(false, TAG .. "right_click_attack"),  -- Right-click enemy to taunt/attack from range (optional)
     potion_hp        = core.menu.slider_int(0, 100, 35, TAG .. "potion_hp"),
+    critical_hp     = core.menu.slider_int(0, 100, 35, TAG .. "critical_hp"),  -- Emergency: LoH/WoG/potion/AD/DP when below this
     lay_on_hands_hp  = core.menu.slider_int(0, 100, 20, TAG .. "lay_on_hands_hp"),
     word_of_glory_hp = core.menu.slider_int(0, 100, 60, TAG .. "word_of_glory_hp"),  -- WoG self-heal below this %
+    ardent_defender_hp  = core.menu.slider_int(0, 100, 50, TAG .. "ardent_defender_hp"),   -- Survival: use AD below this %
+    divine_protection_hp = core.menu.slider_int(0, 100, 50, TAG .. "divine_protection_hp"), -- Survival: use DP below this %
     blessing_of_sacrifice_hp = core.menu.slider_int(0, 100, 35, TAG .. "blessing_of_sacrifice_hp"),
     blessing_of_protection_hp = core.menu.slider_int(0, 100, 25, TAG .. "blessing_of_protection_hp"),
     bop_physical_only = core.menu.checkbox(true, TAG .. "bop_physical_only"),  -- Only use BoP when physical tank buster is being cast (avoids wasting on magic)
@@ -107,16 +117,22 @@ if ok_ui and rotation_settings_ui and type(rotation_settings_ui.new) == "functio
         default_y = 200,
         default_w = 520,
         default_h = 650,
-        theme = "neutral",
+        theme = "paladin",
     })
 end
 if ui then
-    -- Core tab: enable keybind + build choice
+    -- Core tab: enable keybind + logic mode + build choice
     ui:add_tab({ id = "core", label = "Core" }, function(t)
         if t.keybind_grid then
             t:keybind_grid({
                 elements = { menu.toggle_key },
                 labels = { "Enable Rotation" },
+            })
+        end
+        if menu.logic_mode and t.combobox_list then
+            t:combobox_list({
+                label = "Dual Logic",
+                elements = { { element = menu.logic_mode, label = "Mode", options = LOGIC_OPTIONS } },
             })
         end
         if t.checkbox_grid then
@@ -169,8 +185,11 @@ if ui then
                 label = "Thresholds",
                 elements = {
                     { element = menu.potion_hp, label = "Potion HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.critical_hp, label = "Emergency HP% (LoH/WoG/potion/AD/DP)", suffix = "%", visible_when = defensives_enabled },
                     { element = menu.lay_on_hands_hp, label = "Lay on Hands (self) HP%", suffix = "%", visible_when = defensives_enabled },
                     { element = menu.word_of_glory_hp, label = "Word of Glory (self-heal) HP%", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.ardent_defender_hp, label = "Ardent Defender HP% (Survival)", suffix = "%", visible_when = defensives_enabled },
+                    { element = menu.divine_protection_hp, label = "Divine Protection HP% (Survival)", suffix = "%", visible_when = defensives_enabled },
                     { element = menu.blessing_of_sacrifice_hp, label = "Blessing of Sacrifice (party) HP%", suffix = "%", visible_when = defensives_enabled },
                     { element = menu.blessing_of_protection_hp, label = "Blessing of Protection (party) HP%", suffix = "%", visible_when = defensives_enabled },
                 },
@@ -220,6 +239,13 @@ local function get_trinket_item(me, slot)
     return izi.item(id)
 end
 
+local LOGIC_OPTIONS = { "High Key (Survival)", "Low Key (Max DPS)" }
+
+local function is_survival_mode()
+    local v = (menu.logic_mode and menu.logic_mode.get) and menu.logic_mode:get() or 1
+    return v == 1
+end
+
 -- True if the unit has poison or disease we can dispel with Cleanse Toxins (uses engine API when available).
 local function unit_has_dispelable_toxins(unit)
     if not (unit and unit.is_valid and unit:is_valid()) then return false end
@@ -229,11 +255,17 @@ local function unit_has_dispelable_toxins(unit)
 end
 
 -- Record when we attempt Divine Toll so Hammer of Light is suppressed during proc spam.
-core.register_on_legit_spell_cast_callback(function(data)
-    if data and data.spell_id == 375576 then
-        last_divine_toll_time = core.time()
-    end
-end)
+if core and core.register_on_legit_spell_cast_callback and type(core.register_on_legit_spell_cast_callback) == "function" then
+    core.register_on_legit_spell_cast_callback(function(data)
+        if not data or type(data) ~= "table" then return end
+        local sid = data and data.spell_id
+        if sid == 375576 then
+            if core and core.time and type(core.time) == "function" then
+                last_divine_toll_time = core.time()
+            end
+        end
+    end)
+end
 
 -- Render Menu
 core.register_on_render_menu_callback(function()
@@ -241,10 +273,11 @@ core.register_on_render_menu_callback(function()
     menu.root:render(hcs_header("PALADIN", "HCS Protection Paladin"), function()
         menu.enabled:render("Enable Plugin")
         if not menu.enabled:get_state() then return end
-        if ui and ui.menu and ui.menu.enable then
+        if ui and ui.menu and ui.menu.enable and (not rotation_settings_ui or not rotation_settings_ui.is_stub) then
             ui.menu.enable:render("Show Custom UI Window")
         end
         menu.toggle_key:render("Toggle Rotation")
+        if menu.logic_mode then menu.logic_mode:render("Logic mode", LOGIC_OPTIONS, "High Key = Survival priority. Low Key = Max DPS.") end
         menu.build_templar:render("Build: Templar (Hammer of Light, Divine Toll)")
         menu.build_lightsmith:render("Build: Lightsmith (Holy Armaments)")
         menu.build_instrument:render("Build: Instrument of the Divine (Divine Toll + HoL + Holy Bulwark outside AW + SotR at 5 HP)")
@@ -265,8 +298,11 @@ core.register_on_render_menu_callback(function()
         menu.mplus_s3_tank_buster:render("Use defensives on M+ S3 tank busters")
         menu.heal_party:render("Use LoH / WoG on party (heal low-HP allies)")
         if menu.potion_hp then menu.potion_hp:render("Potion HP%") end
+        if menu.critical_hp then menu.critical_hp:render("Emergency HP% (LoH/WoG/potion/AD/DP)") end
         if menu.lay_on_hands_hp then menu.lay_on_hands_hp:render("Lay on Hands (self) HP%") end
         if menu.word_of_glory_hp then menu.word_of_glory_hp:render("Word of Glory (self-heal) HP%") end
+        if menu.ardent_defender_hp then menu.ardent_defender_hp:render("Ardent Defender HP% (Survival)") end
+        if menu.divine_protection_hp then menu.divine_protection_hp:render("Divine Protection HP% (Survival)") end
         if menu.blessing_of_sacrifice_hp then menu.blessing_of_sacrifice_hp:render("Blessing of Sacrifice (party) HP%") end
         if menu.blessing_of_protection_hp then menu.blessing_of_protection_hp:render("Blessing of Protection (party) HP%") end
         menu.bop_physical_only:render("BoP only during physical danger")
@@ -326,15 +362,28 @@ core.register_on_update_callback(function()
     -- Self-heals and optional party heals (LoH / WoG) when below sliders (work with no target, e.g. between pulls)
     if menu.use_defensives:get_state() then
         local my_hp = me:get_health_percentage()
+        local crit_pct = (menu.critical_hp and menu.critical_hp.get and menu.critical_hp:get()) or 35
         local loh_pct = (menu.lay_on_hands_hp and menu.lay_on_hands_hp.get and menu.lay_on_hands_hp:get()) or 20
         local wog_pct = (menu.word_of_glory_hp and menu.word_of_glory_hp.get and menu.word_of_glory_hp:get()) or 60
 
-        -- Self first: Lay on Hands
-        if my_hp < loh_pct and SPELLS.LAY_ON_HANDS:is_learned() and SPELLS.LAY_ON_HANDS:cooldown_up() then
+        -- Emergency (critical HP): LoH first, then WoG, then potion
+        if my_hp < crit_pct then
+            if SPELLS.LAY_ON_HANDS:is_learned() and SPELLS.LAY_ON_HANDS:cooldown_up() then
+                if SPELLS.LAY_ON_HANDS:cast_safe(me, "Emergency: Lay on Hands (self)") then return end
+            end
+            if SPELLS.WORD_OF_GLORY:is_learned() then
+                local hp = (me.holy_power_current and me:holy_power_current()) or 0
+                if hp >= 3 and SPELLS.WORD_OF_GLORY:cast_safe(me, "Emergency: Word of Glory (self)") then return end
+            end
+            if izi.use_best_health_potion_safe and izi.use_best_health_potion_safe() then return end
+        end
+
+        -- Self: Lay on Hands (when below slider, not already handled by emergency)
+        if my_hp < loh_pct and my_hp >= crit_pct and SPELLS.LAY_ON_HANDS:is_learned() and SPELLS.LAY_ON_HANDS:cooldown_up() then
             if SPELLS.LAY_ON_HANDS:cast_safe(me, "Save: Lay on Hands (self)") then return end
         end
-        -- Self: Word of Glory
-        if my_hp < wog_pct and SPELLS.WORD_OF_GLORY:is_learned() then
+        -- Self: Word of Glory (when below slider, not already handled by emergency)
+        if my_hp < wog_pct and my_hp >= crit_pct and SPELLS.WORD_OF_GLORY:is_learned() then
             local hp = (me.holy_power_current and me:holy_power_current()) or 0
             if hp >= 3 and SPELLS.WORD_OF_GLORY:cast_safe(me, "Defensive: Word of Glory (self-heal)") then
                 return
@@ -476,12 +525,25 @@ core.register_on_update_callback(function()
         if my_hp < threshold and izi.use_best_health_potion_safe and izi.use_best_health_potion_safe() then
             return
         end
-        -- Low-HP defensives when not a tank buster
-        if my_hp < 50 then
-            if SPELLS.ARDENT_DEFENDER:is_learned() and SPELLS.ARDENT_DEFENDER:cooldown_up() then
+        -- Dynamic defensives (Survival mode only): emergency (critical HP) then by slider
+        if is_survival_mode() then
+            local crit_pct = (menu.critical_hp and menu.critical_hp.get and menu.critical_hp:get()) or 35
+            local ad_hp = (menu.ardent_defender_hp and menu.ardent_defender_hp.get and menu.ardent_defender_hp:get()) or 50
+            local dp_hp = (menu.divine_protection_hp and menu.divine_protection_hp.get and menu.divine_protection_hp:get()) or 50
+            -- Emergency: below critical use both AD and DP
+            if my_hp < crit_pct then
+                if SPELLS.ARDENT_DEFENDER:is_learned() and SPELLS.ARDENT_DEFENDER:cooldown_up() then
+                    if SPELLS.ARDENT_DEFENDER:cast_safe(me, "Emergency: Ardent Defender") then return end
+                end
+                if SPELLS.DIVINE_PROTECTION:is_learned() and SPELLS.DIVINE_PROTECTION:cooldown_up() then
+                    if SPELLS.DIVINE_PROTECTION:cast_safe(me, "Emergency: Divine Protection") then return end
+                end
+            end
+            -- By slider: Ardent Defender, Divine Protection
+            if my_hp < ad_hp and SPELLS.ARDENT_DEFENDER:is_learned() and SPELLS.ARDENT_DEFENDER:cooldown_up() then
                 if SPELLS.ARDENT_DEFENDER:cast_safe(me, "Defensive: Ardent Defender") then return end
             end
-            if SPELLS.DIVINE_PROTECTION:is_learned() and SPELLS.DIVINE_PROTECTION:cooldown_up() then
+            if my_hp < dp_hp and SPELLS.DIVINE_PROTECTION:is_learned() and SPELLS.DIVINE_PROTECTION:cooldown_up() then
                 if SPELLS.DIVINE_PROTECTION:cast_safe(me, "Defensive: Divine Protection") then return end
             end
         end
@@ -522,7 +584,9 @@ core.register_on_update_callback(function()
         end
         if (use_templar or use_instrument) and SPELLS.DIVINE_TOLL:is_learned() and SPELLS.DIVINE_TOLL:cooldown_up() and range <= DIVINE_TOLL_RANGE then
             if SPELLS.DIVINE_TOLL:cast_safe(target, "CD: Divine Toll") then
-                last_divine_toll_time = core.time()
+                if core and core.time and type(core.time) == "function" then
+                    last_divine_toll_time = core.time()
+                end
                 return
             end
         end
@@ -568,9 +632,15 @@ core.register_on_update_callback(function()
         ::after_interrupt::
     end
 
-    -- Rotation (continued): Hammer of Light -> SotR at 5 HP (Instrument of the Divine) -> SotR -> Judgment -> Blessed Hammer -> Consecration (maintain)
+    -- Consecration: use whenever off CD and in melee (maintain ground for threat/damage)
+    if in_melee and SPELLS.CONSECRATION:is_learned() and SPELLS.CONSECRATION:cooldown_up() then
+        if SPELLS.CONSECRATION:cast_safe(target, "Consecration") then return end
+    end
+
+    -- Rotation (continued): Hammer of Light -> SotR at 5 HP (Instrument of the Divine) -> SotR -> Judgment -> Blessed Hammer
     if (use_templar or use_instrument) and range <= HAMMER_OF_LIGHT_RANGE and SPELLS.HAMMER_OF_LIGHT:is_learned() then
-        if core.time() - last_divine_toll_time >= DIVINE_TOLL_HOL_SUPPRESS_SEC then
+        local now_ok = core and core.time and type(core.time) == "function"
+        if (not now_ok) or (core.time() - last_divine_toll_time >= DIVINE_TOLL_HOL_SUPPRESS_SEC) then
             if SPELLS.HAMMER_OF_LIGHT:cast_safe(target, "Hammer of Light") then return end
         end
     end
@@ -591,10 +661,5 @@ core.register_on_update_callback(function()
 
     if in_melee and SPELLS.BLESSED_HAMMER:is_learned() then
         if SPELLS.BLESSED_HAMMER:cast_safe(target, "Blessed Hammer") then return end
-    end
-
-    -- Consecration as filler (maintain)
-    if SPELLS.CONSECRATION:is_learned() and SPELLS.CONSECRATION:cooldown_up() then
-        if SPELLS.CONSECRATION:cast_safe(target, "Consecration") then return end
     end
 end)

@@ -1,28 +1,26 @@
 **HCS Monk Brewmaster Script v1.0.0**
 
-A complete Brewmaster tank rotation for Project Sylvanas with IZI SDK support.
+A complete Brewmaster tank rotation for Project Sylvanas with IZI SDK support. Dual logic, smart stagger, burst sync, emergency healing, and more.
 
 **Features:**
-✅ Shado-Pan & Master of Harmony builds
-✅ M+ S3 tank buster reactions
-✅ Self-healing (Expel Harm, potion, Fortifying, Celestial)
-✅ Interrupts/stuns with boss checks (no wasted GCDs)
-✅ Targeting modes: Manual / Casters first / Skull first
-✅ Tiger's Lust root dispel
-✅ Full cooldown management
 
-**Installation:**
-1. Extract the `HCS_Monk_Brew` folder to your `scripts/` directory
-2. Ensure you have the shared modules (mplus_s3_interrupt_stun_list, mplus_s3_tank_buster_list, hcs_target_priority, etc.)
-3. Reload scripts
+✅ **Dual Logic** — Toggle between High Key (Survival) and Low Key (Max DPS)
+✅ **Smart Stagger** — Auto-Purify on heavy stagger; use Purifying Brew before capping charges
+✅ **Auto Survival** — Fortifying / Celestial / Dampen Harm on dynamic HP thresholds (Survival mode)
+✅ **Burst Sync** — Stack Bonedust Brew → Weapons of Order → Niuzao when both WoO and Niuzao ready
+✅ **Energy Anti-Cap** — Expel Harm when energy above threshold to avoid wasting
+✅ **Auto-Execute** — Touch of Death priority on low-HP targets (Smart targeting)
+✅ **Smart AoE** — SCK priority when 5+ enemies (swap rotation)
+✅ **Emergency Healing** — Vivify + Expel Harm when below critical HP%
+✅ **Shado-Pan & Master of Harmony** builds
+✅ **M+ S3 tank buster** reactions
+✅ **Self-healing** — Expel Harm, potion, Fortifying, Celestial (sliders)
+✅ **Interrupts/stuns** with boss checks (no wasted GCDs)
+✅ **Targeting:** Manual / Casters first / Skull first / Smart
+✅ **Tiger's Lust** root dispel
+✅ **Right-click attack** (Chi Burst range pull)
+✅ **Full cooldown** management
 
-**Files included:**
-- `header.lua` - Plugin loader (class/spec validation)
-- `main.lua` - Full rotation logic
-- `README.md` - Detailed documentation
+**Note:** Stuns and pushback skip bosses to avoid wasting GCDs. Self-healing works with no target. Logic mode sliders: Emergency HP%, Vivify HP%, Fortifying HP%, Celestial HP%, Dampen Harm HP%, Energy anti-cap %.
 
-**Note:** Stuns and pushback effects automatically skip bosses to avoid wasting GCDs. Self-healing works even with no target.
-
----
-
-**Download:** [Attach the HCS_Monk_Brew folder as a zip file]
+**Available on the marketplace.**

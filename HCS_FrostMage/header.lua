@@ -1,7 +1,7 @@
 -- Setup our plugin info
 local plugin = {}
 
-plugin.name = "HCS Frost Mage (Mythic+)"
+plugin.name = "HCS Frost Mage"
 plugin.version = "1.0.0"
 plugin.author = "HCS"
 plugin.load = true

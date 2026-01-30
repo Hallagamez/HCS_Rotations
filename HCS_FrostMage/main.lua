@@ -1,7 +1,7 @@
 --[[
-    HCS Frost Mage (Mythic+) — IZI SDK
+    HCS Frost Mage — IZI SDK
     Author: HCS
-    Build: Spellsinger Mythic+/AoE (Wowhead)
+    Build: Spellsinger M+/AoE (Wowhead)
     — Splintering Sorcery, Augury Abounds, Controlled Instincts, Splinterstorm.
     — Blizzard enables Splinter splash; Frozen Orb / Icy Veins / Shifting Power generate Splinters.
     M+ utilities: cooldowns, defensives, interrupt, dispel curses, auto/manual targeting.
@@ -19,6 +19,7 @@ local ok_mplus, mplus_s3 = pcall(require, "shared/mplus_s3_interrupt_stun_list")
 local ok_cc, class_colors = pcall(require, "shared/hcs_class_colors")
 local function hcs_header(cls, title) return (ok_cc and class_colors and class_colors.hcs_header and class_colors.hcs_header(cls, title)) or title end
 local ok_tp, hcs_target_priority = pcall(require, "shared/hcs_target_priority")
+local ok_ui, rotation_settings_ui = pcall(require, "shared/rotation_settings_ui")
 
 local BLIZZARD_ID = 190356
 local BLIZZARD_RANGE = 40
@@ -79,6 +80,83 @@ local function rotation_enabled()
     return menu.enabled:get_state() and menu.toggle_key:get_toggle_state()
 end
 
+-- Custom settings window (class-color theme: mage)
+local ui
+if ok_ui and rotation_settings_ui and type(rotation_settings_ui.new) == "function" then
+    ui = rotation_settings_ui.new({
+        id = "hcs_frost_mage",
+        title = hcs_header("MAGE", "HCS Frost Mage"),
+        default_x = 700,
+        default_y = 200,
+        default_w = 520,
+        default_h = 650,
+        theme = "mage",
+    })
+end
+if ui then
+    ui:add_tab({ id = "core", label = "Core" }, function(t)
+        if t.keybind_grid then
+            t:keybind_grid({ elements = { menu.toggle_key }, labels = { "Enable Rotation" } })
+        end
+    end)
+    ui:add_tab({ id = "cooldowns", label = "Cooldowns" }, function(t)
+        if t.checkbox_grid then
+            t:checkbox_grid({
+                label = "Cooldowns",
+                columns = 2,
+                elements = {
+                    { element = menu.use_cooldowns, label = "Use Icy Veins + Shifting Power" },
+                    { element = menu.trinket1_boss, label = "Trinket 1: Boss only" },
+                    { element = menu.trinket1_cd, label = "Trinket 1: On CD" },
+                    { element = menu.trinket2_boss, label = "Trinket 2: Boss only" },
+                    { element = menu.trinket2_cd, label = "Trinket 2: On CD" },
+                },
+            })
+        end
+    end)
+    ui:add_tab({ id = "survival", label = "Survival" }, function(t)
+        if t.checkbox_grid then
+            t:checkbox_grid({
+                label = "Defensives",
+                columns = 1,
+                elements = {
+                    { element = menu.use_defensives, label = "Use defensives + health potion" },
+                },
+            })
+        end
+    end)
+    ui:add_tab({ id = "targeting", label = "Targeting" }, function(t)
+        if t.checkbox_grid then
+            t:checkbox_grid({
+                label = "Targeting",
+                columns = 1,
+                elements = {
+                    { element = menu.interrupt, label = "Interrupt (Counterspell)" },
+                    { element = menu.mplus_s3_list, label = "M+ S3 list only (kick/stop listed casts)" },
+                },
+            })
+        end
+        if t.combo_list and menu.targeting_mode and ok_tp and hcs_target_priority and hcs_target_priority.TARGETING_OPTIONS then
+            t:combo_list({
+                label = "Targeting mode",
+                elements = { { element = menu.targeting_mode, label = "Mode", options = hcs_target_priority.TARGETING_OPTIONS } },
+            })
+        end
+    end)
+    ui:add_tab({ id = "utility", label = "Utility" }, function(t)
+        if t.checkbox_grid then
+            t:checkbox_grid({
+                label = "Utility",
+                columns = 1,
+                elements = {
+                    { element = menu.use_spellsteal, label = "Spellsteal stealable buffs" },
+                    { element = menu.use_dispel_curse, label = "Dispel curses (party/self)" },
+                },
+            })
+        end
+    end)
+end
+
 -- True if the unit has a curse we can dispel (uses engine API when available).
 local function unit_has_dispelable_curse(unit)
     if not (unit and unit.is_valid and unit:is_valid()) then return false end
@@ -102,11 +180,13 @@ end
 
 -- Render Menu
 core.register_on_render_menu_callback(function()
-    menu.root:render(hcs_header("MAGE", "HCS Frost Mage (M+)"), function()
+    if ui then ui:on_menu_render() end
+    menu.root:render(hcs_header("MAGE", "HCS Frost Mage"), function()
         menu.enabled:render("Enable Plugin")
-
         if not menu.enabled:get_state() then return end
-
+        if ui and ui.menu and ui.menu.enable and (not rotation_settings_ui or not rotation_settings_ui.is_stub) then
+            ui.menu.enable:render("Show Custom UI Window")
+        end
         menu.toggle_key:render("Toggle Rotation")
         menu.interrupt:render("Interrupt (Counterspell)")
         menu.mplus_s3_list:render("M+ S3 list only (kick/stop listed casts)")
@@ -136,6 +216,11 @@ core.register_on_render_control_panel_callback(function()
         keybind = menu.toggle_key
     })
     return cp_elements
+end)
+
+-- Draw custom settings window when enabled
+core.register_on_render_callback(function()
+    if ui then ui:on_render() end
 end)
 
 -- MAIN LOOP (Runs every tick)
